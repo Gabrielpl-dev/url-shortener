@@ -18,7 +18,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 # --- Constants ---------------------------------------------------------------
 
@@ -125,7 +125,10 @@ def validate_url(value):
         code = ord(char)
         if code < 0x21 or code == 0x7F:  # spaces and control characters
             return False
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
     if parts.scheme not in ("http", "https"):
         return False
     if not parts.hostname:
@@ -135,6 +138,19 @@ def validate_url(value):
 
 def generate_alias():
     return "".join(random.choice(ALIAS_ALPHABET) for _ in range(ALIAS_GEN_LEN))
+
+
+def encode_url(value):
+    """Convert an international URL to an ASCII URI for storage and headers."""
+    if value.isascii():
+        return value
+    parts = urlsplit(value)
+    userinfo, separator, authority = parts.netloc.rpartition("@")
+    if not authority.isascii():
+        host, colon, port = authority.partition(":")
+        authority = host.encode("idna").decode("ascii") + colon + port
+    netloc = userinfo + separator + authority
+    return quote(urlunsplit(parts._replace(netloc=netloc)), safe=":/?#[]@!$&'()*+,;=%")
 
 
 # --- Storage -----------------------------------------------------------------
@@ -449,6 +465,10 @@ class Handler(BaseHTTPRequestHandler):
         url = data.get("url")
         if not validate_url(url):
             return self._error(400, "invalid_url")
+        try:
+            url = encode_url(url)
+        except UnicodeError:
+            return self._error(400, "invalid_url")
 
         created_at = now_iso()
         alias = data.get("alias", _MISSING)
@@ -460,7 +480,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             if (
                 not isinstance(alias, str)
-                or not ALIAS_RE.match(alias)
+                or not ALIAS_RE.fullmatch(alias)
                 or alias in RESERVED_ALIASES
             ):
                 return self._error(400, "invalid_alias")
